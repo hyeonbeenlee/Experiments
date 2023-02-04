@@ -1,0 +1,47 @@
+FullData Validation DataSet에 대하여 결정계수
+
+th R2: 0.046980
+dth R2: 0.146405
+ddth R2: 0.030704
+Learning time 46sec.
+Example-Pendulum_Single, Case-2K Model Saved.
+th R2: 0.065991
+dth R2: 0.110301
+ddth R2: 0.004291
+Learning time 44sec.
+Example-Pendulum_Single, Case-Rand2K Model Saved.
+
+th R2: 0.764060
+dth R2: 0.723963
+ddth R2: 0.756246
+Learning time 51sec.
+Example-Pendulum_Single, Case-3K Model Saved.
+th R2: 0.384263
+dth R2: 0.451458
+ddth R2: 0.316673
+Learning time 55sec.
+Example-Pendulum_Single, Case-Rand3K Model Saved.
+
+th R2: 0.982178
+dth R2: 0.973244
+ddth R2: 0.976997
+Learning time 122sec.
+Example-Pendulum_Single, Case-5K Model Saved.
+th R2: 0.886465
+dth R2: 0.873121
+ddth R2: 0.863024
+Learning time 82sec.
+Example-Pendulum_Single, Case-Rand5K Model Saved.
+
+
+th R2: 0.993739
+dth R2: 0.993561
+ddth R2: 0.991614
+Learning time 143sec.
+Example-Pendulum_Single, Case-7K Model Saved.
+th R2: 0.976193
+dth R2: 0.968442
+ddth R2: 0.971272
+Learning time 143sec.
+Example-Pendulum_Single, Case-Rand7K Model Saved.
+
