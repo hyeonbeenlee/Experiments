@@ -34,9 +34,9 @@ class SpectralConv2d(nn.Module):
         # Multiply relevant Fourier modes
         out_ft = torch.zeros(batchsize, self.out_channels, x.size(-2), x.size(-1) // 2 + 1, dtype=torch.cfloat, device=x.device)
         out_ft[:, :, :self.modes1, :self.modes2] = \
-            self.compl_mul2d(x_ft[:, :, :self.modes1, :self.modes2], self.weights1) # Left Upper Corner of 2D grid == Lower frequencies
+            self.compl_mul2d(x_ft[:, :, :self.modes1, :self.modes2], self.weights1) # Left Upper Corner of 2D RFFT grid == Lower frequencies
         out_ft[:, :, -self.modes1:, :self.modes2] = \
-            self.compl_mul2d(x_ft[:, :, -self.modes1:, :self.modes2], self.weights2) # Left Lower Corner of 2D grid == Lower frequencies
+            self.compl_mul2d(x_ft[:, :, -self.modes1:, :self.modes2], self.weights2) # Left Lower Corner of 2D RFFT grid == Lower frequencies
         
         # Return to physical space
         x = torch.fft.irfft2(out_ft, s=(x.size(-2), x.size(-1))) # the last dimension in s should be compressed dimension
