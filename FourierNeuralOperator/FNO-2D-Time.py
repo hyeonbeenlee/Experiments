@@ -1,3 +1,10 @@
+"""
+@author: Zongyi Li
+This file is the Fourier Neural Operator for 2D problem such as the Navier-Stokes equation discussed in Section 5.3 in the [paper](https://arxiv.org/pdf/2010.08895.pdf),
+which uses a recurrent structure to propagates in time.
+"""
+
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -35,8 +42,10 @@ class SpectralConv2d(nn.Module):
         out_ft = torch.zeros(batchsize, self.out_channels, x.size(-2), x.size(-1) // 2 + 1, dtype=torch.cfloat, device=x.device)
         out_ft[:, :, :self.modes1, :self.modes2] = \
             self.compl_mul2d(x_ft[:, :, :self.modes1, :self.modes2], self.weights1) # Left Upper Corner of 2D RFFT grid == Lower frequencies
+        # mode2 dimension is fixed since one-sided. Left corner of vector
         out_ft[:, :, -self.modes1:, :self.modes2] = \
             self.compl_mul2d(x_ft[:, :, -self.modes1:, :self.modes2], self.weights2) # Left Lower Corner of 2D RFFT grid == Lower frequencies
+        # mode2 dimension is fixed since one-sided. Right corner of vector
         
         # Return to physical space
         x = torch.fft.irfft2(out_ft, s=(x.size(-2), x.size(-1))) # the last dimension in s should be compressed dimension

@@ -110,7 +110,27 @@ def fft2d():
     fig.tight_layout()
     plt.show()
 
+def fftnd():
+    grid = torch.randn(8, 16, 32, 64, 128)
+    dim = [-3, -2, -1]  # Dimension to compute FFT. The last dimension is compressed by RFFT
+    
+    a_fftn = torch.fft.fftn(grid, dim=dim)
+    a_rfftn = torch.fft.rfftn(grid, dim=dim)
+    
+    a_ifftn = torch.fft.ifftn(a_fftn, dim=dim) # Imaginary parts of IFFT results are near zero. If the FFT input signal was real, the IFFT(FFT) signal should be real, analytically.
+    a_irfftn = torch.fft.irfftn(a_rfftn, dim=dim) # Only returns purely real signals, NO IMAGINARY output with RFFT
+    
+    mp.visualize.PlotTemplate()
+    fig, axes = plt.subplots(2, 3, figsize=(18, 7))
+    random_idx = torch.randint(0, 8, size=(3, 3))  # 3 samples, 3 randomized indices
+    for i in range(3):
+        axes[0, i].matshow(grid[random_idx[i, 0], random_idx[i, 1], random_idx[i, 2], :, :])
+        axes[1, i].matshow(a_ifftn[random_idx[i, 0], random_idx[i, 1], random_idx[i, 2], :, :])
+    plt.show()
+    
+    pass
 
-# fft1d_vector()
+fft1d_vector()
 # fft1d_array()
-fft2d()
+# fft2d()
+# fftnd()
