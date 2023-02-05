@@ -45,7 +45,7 @@ def fft1d_array():
     T = 1 / Fs  # Sampling time interval
     t_end = 0.5  # End time
     t = torch.arange(0, t_end, T).reshape(-1, 1)  # Time vector
-    signal = 6 * sin(2 * pi * 60 * t) + 10 * sin(2 * pi * 120 * t).reshape(-1, 1).repeat(1, 32)  # (N,32) singal array
+    signal = 6 * sin(2 * pi * 60 * t) + 10 * cos(2 * pi * 120 * t).reshape(-1, 1).repeat(1, 32)  # (N,32) singal array
     # signal += 0.1 * torch.randn(t.shape[0], )  # Small Gaussian noise
     n_samples = signal.shape[0]
     
@@ -128,9 +128,26 @@ def fftnd():
         axes[1, i].matshow(a_ifftn[random_idx[i, 0], random_idx[i, 1], random_idx[i, 2], :, :])
     plt.show()
     
-    pass
-
-fft1d_vector()
+def TestFFT():
+    # Set
+    Fs = 2000  # Sampling frequency
+    T = 1 / Fs  # Sampling time interval
+    t_end = 0.5  # End time
+    t = torch.arange(0, t_end, T).reshape(-1, 1)  # Time vector
+    signal = 6 * sin(2 * pi * 60 * t) + 10 * cos(2 * pi * 120 * t).reshape(-1, 1).repeat(1, 32)  # (N,32) singal array
+    # signal += 0.1 * torch.randn(t.shape[0], )  # Small Gaussian noise
+    n_samples = signal.shape[0]
+    
+    # Using mypackage
+    a,f=mp.scientific.FFT1(signal.numpy(),t=t.numpy(), return_complex=True)
+    sig=mp.scientific.IFFT1(a)
+    
+    plt.plot(f,a.real)
+    plt.plot(f,a.imag)
+    
+    plt.show()
+# fft1d_vector()
 # fft1d_array()
 # fft2d()
 # fftnd()
+TestFFT()
