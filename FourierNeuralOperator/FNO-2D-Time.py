@@ -9,6 +9,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
+from timeit import default_timer
+from Utils import *
 
 class SpectralConv2d(nn.Module):
     def __init__(self, in_channels, out_channels, modes1, modes2):
@@ -104,7 +106,7 @@ class FNO2d(nn.Module):
     
     def forward(self, x):
         # x.shape -> (batchsize,x,y,t_in)
-        grid = self.get_grid(x.shape, x.device) # Get positional encoding (batchsize,x,y,2)
+        grid = self.get_grid(x.shape, x.device) # Get positional encoding for x,y (batchsize,x,y,2)
         x = torch.cat((x, grid), dim=-1)  # Concatenate raw_input + pos_encoding along time (batchsize,x,y,t_in+2)
         x = self.p(x)  # nn.Linear(12, width) along the last axis: (batchsize,x,y,width)
         x = x.permute(0, 3, 1, 2) # Permute (batchsize,width,x,y)
@@ -151,25 +153,127 @@ class FNO2d(nn.Module):
         gridy = gridy.reshape(1, 1, size_y, 1).repeat([batchsize, size_x, 1, 1])  # (N,1,size_y,1) tensor, dim(size_x)=linspace(0,1)
         return torch.cat((gridx, gridy), dim=-1).to(device)  # Concatenate along time, (t-10,t-9,...t-1, [x,y])
 
-batchsize = 32
-grids_x = 64
-grids_y = 64
-t_in = 10
-fourier_modes = 12
+################################################################
+# configs
+################################################################
+
+TRAIN_PATH = 'data/ns_data_V100_N1000_T50_1.mat'
+TRAIN_PATH = 'data/NavierStokes_V1e-5_N1200_T20.mat'
+TEST_PATH = 'data/ns_data_V100_N1000_T50_2.mat'
+TEST_PATH = 'data/NavierStokes_V1e-5_N1200_T20.mat'
+
+ntrain = 1000
+ntest = 200
+
+modes = 12
 width = 20
 
-fno = FNO2d(fourier_modes, fourier_modes, width)
-p = nn.Linear(t_in + 2, width)
+batch_size = 20
+learning_rate = 0.001
+epochs = 500
+iterations = epochs*(ntrain//batch_size)
 
-# Forward pass analysis
-x0 = torch.rand(batchsize, grids_x, grids_y, t_in)  # Batched input from dataloader (N,x,y,t_in)
-try:
-    fno(x0)
-except:
-    raise ValueError("Improper input shape")
-grid = get_grid(x0.shape, x0.device)  # Positional encoding (N,x,y,2)
-x1 = torch.cat([x0, grid], axis=-1)  # Raw input + pos encoding (N,x,y,t_in+2)
-x2 = p(x1)  # Linear transform P is applied to the last dimension (N,x,y,width)
-x2 = x2.permute(0, 3, 1, 2)  # Permuted to (N,width,x,y)
+path = 'ns_fourier_2d_time_N'+str(ntrain)+'_ep' + str(epochs) + '_m' + str(modes) + '_w' + str(width)
+path_model = 'model/'+path
+path_train_err = 'results/'+path+'train.txt'
+path_test_err = 'results/'+path+'test.txt'
+path_image = 'image/'+path
 
-pass
+sub = 1
+S = 64
+T_in = 10
+T = 40 # T=40 for V1e-3; T=20 for V1e-4; T=10 for V1e-5;
+step = 1
+
+################################################################
+# load data
+################################################################
+
+reader = MatReader(TRAIN_PATH)
+train_a = reader.read_field('u')[:ntrain,::sub,::sub,:T_in]
+train_u = reader.read_field('u')[:ntrain,::sub,::sub,T_in:T+T_in]
+
+reader = MatReader(TEST_PATH)
+test_a = reader.read_field('u')[-ntest:,::sub,::sub,:T_in]
+test_u = reader.read_field('u')[-ntest:,::sub,::sub,T_in:T+T_in]
+
+print(train_u.shape)
+print(test_u.shape)
+assert (S == train_u.shape[-2])
+assert (T == train_u.shape[-1])
+
+train_a = train_a.reshape(ntrain,S,S,T_in)
+test_a = test_a.reshape(ntest,S,S,T_in)
+
+
+
+train_loader = torch.utils.data.DataLoader(torch.utils.data.TensorDataset(train_a, train_u), batch_size=batch_size, shuffle=True)
+test_loader = torch.utils.data.DataLoader(torch.utils.data.TensorDataset(test_a, test_u), batch_size=batch_size, shuffle=False)
+
+################################################################
+# training and evaluation
+################################################################
+model = FNO2d(modes, modes, width).cuda()
+print(count_params(model))
+optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=1e-4)
+scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=iterations)
+
+myloss = LpLoss(size_average=False)
+for ep in range(epochs):
+    model.train()
+    t1 = default_timer()
+    train_l2_step = 0
+    train_l2_full = 0
+    for xx, yy in train_loader:
+        loss = 0
+        xx = xx.to(device)
+        yy = yy.to(device)
+
+        for t in range(0, T, step):
+            y = yy[..., t:t + step]
+            im = model(xx)
+            loss += myloss(im.reshape(batch_size, -1), y.reshape(batch_size, -1))
+
+            if t == 0:
+                pred = im
+            else:
+                pred = torch.cat((pred, im), -1)
+
+            xx = torch.cat((xx[..., step:], im), dim=-1)
+
+        train_l2_step += loss.item()
+        l2_full = myloss(pred.reshape(batch_size, -1), yy.reshape(batch_size, -1))
+        train_l2_full += l2_full.item()
+
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+        scheduler.step()
+
+    test_l2_step = 0
+    test_l2_full = 0
+    with torch.no_grad():
+        for xx, yy in test_loader:
+            loss = 0
+            xx = xx.to(device)
+            yy = yy.to(device)
+
+            for t in range(0, T, step):
+                y = yy[..., t:t + step]
+                im = model(xx)
+                loss += myloss(im.reshape(batch_size, -1), y.reshape(batch_size, -1))
+
+                if t == 0:
+                    pred = im
+                else:
+                    pred = torch.cat((pred, im), -1)
+
+                xx = torch.cat((xx[..., step:], im), dim=-1)
+
+            test_l2_step += loss.item()
+            test_l2_full += myloss(pred.reshape(batch_size, -1), yy.reshape(batch_size, -1)).item()
+
+    t2 = default_timer()
+    print(ep, t2 - t1, train_l2_step / ntrain / (T / step), train_l2_full / ntrain, test_l2_step / ntest / (T / step),
+          test_l2_full / ntest)
+# torch.save(model, path_model)

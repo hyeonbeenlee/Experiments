@@ -4,9 +4,10 @@ This file is the Fourier Neural Operator for 3D problem such as the Navier-Stoke
 which takes the 2D spatial + 1D temporal equation directly as a 3D problem
 """
 
-
 import torch
 import torch.nn.functional as F
+from timeit import default_timer
+from Utils import *
 
 torch.manual_seed(0)
 np.random.seed(0)
@@ -48,14 +49,18 @@ class SpectralConv3d(nn.Module):
         # Multiply relevant Fourier modes
         out_ft = torch.zeros(batchsize, self.out_channels, x.size(-3), x.size(-2), x.size(-1) // 2 + 1, dtype=torch.cfloat, device=x.device)
         out_ft[:, :, :self.modes1, :self.modes2, :self.modes3] = \
-            self.compl_mul3d(x_ft[:, :, :self.modes1, :self.modes2, :self.modes3], self.weights1) # mode3 dimension is fixed since one-sided. Left upper corner of grid
+            self.compl_mul3d(x_ft[:, :, :self.modes1, :self.modes2, :self.modes3],
+                             self.weights1)  # mode3 dimension is fixed since one-sided. Left upper corner of grid
         out_ft[:, :, -self.modes1:, :self.modes2, :self.modes3] = \
-            self.compl_mul3d(x_ft[:, :, -self.modes1:, :self.modes2, :self.modes3], self.weights2) # mode3 dimension is fixed since one-sided. Left lower corner of grid
+            self.compl_mul3d(x_ft[:, :, -self.modes1:, :self.modes2, :self.modes3],
+                             self.weights2)  # mode3 dimension is fixed since one-sided. Left lower corner of grid
         out_ft[:, :, :self.modes1, -self.modes2:, :self.modes3] = \
-            self.compl_mul3d(x_ft[:, :, :self.modes1, -self.modes2:, :self.modes3], self.weights3) # mode3 dimension is fixed since one-sided. Right upper corner of grid
+            self.compl_mul3d(x_ft[:, :, :self.modes1, -self.modes2:, :self.modes3],
+                             self.weights3)  # mode3 dimension is fixed since one-sided. Right upper corner of grid
         out_ft[:, :, -self.modes1:, -self.modes2:, :self.modes3] = \
-            self.compl_mul3d(x_ft[:, :, -self.modes1:, -self.modes2:, :self.modes3], self.weights4) # mode3 dimension is fixed since one-sided. Right lower corner of grid
-
+            self.compl_mul3d(x_ft[:, :, -self.modes1:, -self.modes2:, :self.modes3],
+                             self.weights4)  # mode3 dimension is fixed since one-sided. Right lower corner of grid
+        
         # Return to physical space
         x = torch.fft.irfftn(out_ft, s=(x.size(-3), x.size(-2), x.size(-1)))
         return x
@@ -112,38 +117,50 @@ class FNO3d(nn.Module):
         self.q = MLP(self.width, 1, self.width * 4)  # output channel is 1: u(x, y)
     
     def forward(self, x):
-        grid = self.get_grid(x.shape, x.device)
-        x = torch.cat((x, grid), dim=-1)
-        x = self.p(x)
-        x = x.permute(0, 4, 1, 2, 3)
-        x = F.pad(x, [0, self.padding])  # pad the domain if input is non-periodic
-        
-        x1 = self.conv0(x)
-        x1 = self.mlp0(x1)
-        x2 = self.w0(x)
-        x = x1 + x2
-        x = F.gelu(x)
-        
+        # t_in=10 steps, t_out=40 steps
+        # x.shape -> (batchsize,x,y,t_out,t_in)
+        grid = self.get_grid(x.shape, x.device)  # Get positional encoding for x,y,t (batchsize,x,y,t_out,3)
+        x = torch.cat((x, grid), dim=-1)  # Concatenate raw_input + pos_encoding along time (batchsize,x,y,t_out,t_in+3)
+        x = self.p(x)  # Linear transformation (batchsize,x,y,t_out,t_in+3) -> (batchsize,x,y,t_out,width)
+        x = x.permute(0, 4, 1, 2, 3)  # Permute (batchsize,x,y,t_out,width) -> (batchsize,width,x,y,t_out)
+        x = F.pad(x, [0, self.padding])  # pad the time domain if input is non-periodic (batchsize,width,x,y,0+t_out+padding)
+        """
+        data=torch.rand(4)
+        F.pad(data,(0,2)) # => (dim-1_left,dim-1_right,dim-2_left,dim-2_right,...,dim0_left, dim0_right)
+        Out[16]: tensor([0.5662, 0.1817, 0.5562, 0.7668, 0.0000, 0.0000])
+        """
+
+        # Start of a Fourier Layer
+        x1 = self.conv0(x) # Shape preserved SpectralConv3d ops (batchsize,width,x,y,0+t_out+padding)
+        x1 = self.mlp0(x1) # Shape preserved Residual-connected Conv3d(kernel_size=1) ops (batchsize,width,x,y,0+t_out+padding)
+        x2 = self.w0(x) # Shape preserved pointwise linear transformation Conv3d(kernel_size=1) ops (batchsize,width,x,y,0+t_out+padding)
+        x = x1 + x2 # Summation
+        x = F.gelu(x) # Nonlinearity
+        # End of a Fourier Layer
+
+        # A repeated Fourier Layer
         x1 = self.conv1(x)
         x1 = self.mlp1(x1)
         x2 = self.w1(x)
         x = x1 + x2
         x = F.gelu(x)
-        
+
+        # A repeated Fourier Layer
         x1 = self.conv2(x)
         x1 = self.mlp2(x1)
         x2 = self.w2(x)
         x = x1 + x2
         x = F.gelu(x)
         
+        # A repeated Fourier Layer
         x1 = self.conv3(x)
         x1 = self.mlp3(x1)
         x2 = self.w3(x)
         x = x1 + x2
         
-        x = x[..., :-self.padding]
-        x = self.q(x)
-        x = x.permute(0, 2, 3, 4, 1)  # pad the domain if input is non-periodic
+        x = x[..., :-self.padding] # Remove padded dimension in line 124 (batchsize,width,x,y,0+t_out+padding) -> (batchsize,width,x,y,t_out)
+        x = self.q(x) # MLP(width, 1, width * 4): (batchsize,width,x,y,t_out) -> (batchsize,4*width,x,y,t_out) -> (batchsize,1,x,y,t_out)
+        x = x.permute(0, 2, 3, 4, 1)  # Permute  (batchsize,1,x,y,t_out) -> (batchsize,x,y,t_out, 1)
         return x
     
     
@@ -156,3 +173,142 @@ class FNO3d(nn.Module):
         gridz = torch.tensor(np.linspace(0, 1, size_z), dtype=torch.float)
         gridz = gridz.reshape(1, 1, 1, size_z, 1).repeat([batchsize, size_x, size_y, 1, 1])
         return torch.cat((gridx, gridy, gridz), dim=-1).to(device)
+    
+    
+################################################################
+# configs
+################################################################
+
+TRAIN_PATH = 'data/ns_data_V100_N1000_T50_1.mat'
+TEST_PATH = 'data/ns_data_V100_N1000_T50_2.mat'
+
+ntrain = 1000
+ntest = 200
+
+modes = 8
+width = 20
+
+batch_size = 10
+learning_rate = 0.001
+epochs = 500
+iterations = epochs*(ntrain//batch_size)
+
+path = 'ns_fourier_3d_N'+str(ntrain)+'_ep' + str(epochs) + '_m' + str(modes) + '_w' + str(width)
+path_model = 'model/'+path
+path_train_err = 'results/'+path+'train.txt'
+path_test_err = 'results/'+path+'test.txt'
+path_image = 'image/'+path
+
+runtime = np.zeros(2, )
+t1 = default_timer()
+
+sub = 1
+S = 64 // sub
+T_in = 10
+T = 40 # T=40 for V1e-3; T=20 for V1e-4; T=10 for V1e-5;
+
+################################################################
+# load data
+################################################################
+
+reader = MatReader(TRAIN_PATH)
+train_a = reader.read_field('u')[:ntrain,::sub,::sub,:T_in]
+train_u = reader.read_field('u')[:ntrain,::sub,::sub,T_in:T+T_in]
+
+reader = MatReader(TEST_PATH)
+test_a = reader.read_field('u')[-ntest:,::sub,::sub,:T_in]
+test_u = reader.read_field('u')[-ntest:,::sub,::sub,T_in:T+T_in]
+
+print(train_u.shape)
+print(test_u.shape)
+assert (S == train_u.shape[-2])
+assert (T == train_u.shape[-1])
+
+
+a_normalizer = UnitGaussianNormalizer(train_a)
+train_a = a_normalizer.encode(train_a)
+test_a = a_normalizer.encode(test_a)
+
+y_normalizer = UnitGaussianNormalizer(train_u)
+train_u = y_normalizer.encode(train_u)
+
+train_a = train_a.reshape(ntrain,S,S,1,T_in).repeat([1,1,1,T,1])
+test_a = test_a.reshape(ntest,S,S,1,T_in).repeat([1,1,1,T,1])
+
+train_loader = torch.utils.data.DataLoader(torch.utils.data.TensorDataset(train_a, train_u), batch_size=batch_size, shuffle=True)
+test_loader = torch.utils.data.DataLoader(torch.utils.data.TensorDataset(test_a, test_u), batch_size=batch_size, shuffle=False)
+
+t2 = default_timer()
+
+print('preprocessing finished, time used:', t2-t1)
+device = torch.device('cuda')
+
+################################################################
+# training and evaluation
+################################################################
+model = FNO3d(modes, modes, modes, width).cuda()
+print(count_params(model))
+optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=1e-4)
+scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=iterations)
+
+myloss = LpLoss(size_average=False)
+y_normalizer.cuda()
+for ep in range(epochs):
+    model.train()
+    t1 = default_timer()
+    train_mse = 0
+    train_l2 = 0
+    for x, y in train_loader:
+        x, y = x.cuda(), y.cuda()
+
+        optimizer.zero_grad()
+        out = model(x).view(batch_size, S, S, T)
+
+        mse = F.mse_loss(out, y, reduction='mean')
+        # mse.backward()
+
+        y = y_normalizer.decode(y)
+        out = y_normalizer.decode(out)
+        l2 = myloss(out.view(batch_size, -1), y.view(batch_size, -1))
+        l2.backward()
+
+        optimizer.step()
+        scheduler.step()
+        train_mse += mse.item()
+        train_l2 += l2.item()
+
+    model.eval()
+    test_l2 = 0.0
+    with torch.no_grad():
+        for x, y in test_loader:
+            x, y = x.cuda(), y.cuda()
+
+            out = model(x).view(batch_size, S, S, T)
+            out = y_normalizer.decode(out)
+            test_l2 += myloss(out.view(batch_size, -1), y.view(batch_size, -1)).item()
+
+    train_mse /= len(train_loader)
+    train_l2 /= ntrain
+    test_l2 /= ntest
+
+    t2 = default_timer()
+    print(ep, t2-t1, train_mse, train_l2, test_l2)
+# torch.save(model, path_model)
+
+pred = torch.zeros(test_u.shape)
+index = 0
+test_loader = torch.utils.data.DataLoader(torch.utils.data.TensorDataset(test_a, test_u), batch_size=1, shuffle=False)
+with torch.no_grad():
+    for x, y in test_loader:
+        test_l2 = 0
+        x, y = x.cuda(), y.cuda()
+
+        out = model(x)
+        out = y_normalizer.decode(out)
+        pred[index] = out
+
+        test_l2 += myloss(out.view(1, -1), y.view(1, -1)).item()
+        print(index, test_l2)
+        index = index + 1
+
+scipy.io.savemat('pred/'+path+'.mat', mdict={'pred': pred.cpu().numpy()})
